@@ -1,9 +1,9 @@
-# production-planning-system# 🏭 Production Planning System
+# 🏭 Production Planning System
 
-An end-to-end manufacturing intelligence platform — from sales forecasting to production order prioritization.
+A full **S&OP (Sales & Operations Planning)** platform built from scratch — integrating demand forecasting, inventory analytics, capacity constraints, and production suggestions into a single operational system.
 
-Integrates real ERP data across 5 sources to answer one question automatically:  
-**"What do we need to produce today, and how urgent is it?"**
+Answers the question most ERPs charge a fortune to solve:  
+**"What should we produce, how much, and when — given real demand, real stock, and real capacity?"**
 
 > ⚠️ This repository contains documentation and sanitized code samples only.  
 > The production system runs on private infrastructure connected to a live ERP database.
@@ -13,37 +13,48 @@ Integrates real ERP data across 5 sources to answer one question automatically:
 ## 📸 Screenshots
 
 ### Production Planning Dashboard
-![Production Planning Dashboard](screenshots/dashboard.png)
+![Production Planning Dashboard](screenshots/Production%20Planning%20Dashboard.png)
 
-### MRP Matrix — Projections by Month
-![MRP Matrix](screenshots/mrp-matrix.png)
+### Production Plan Suggestion
+![Production Plan Suggestion](screenshots/Sugestão%20Plano.png)
 
 ### ABC Curve Analysis
-![ABC Curve](screenshots/abc-curve.png)
+![ABC Curve](screenshots/Production%20Planning%20ABC.png)
 
 ---
 
-## 🧠 System Architecture
+## 🧠 Full S&OP Pipeline
+
+This is not a simple MRP. It is a complete demand-supply planning cycle:
 
 ```
-ERP Database (PostgreSQL)
-        │
-        ├── Physical Stock ──────────────────┐
-        ├── In-Process Production ───────────┤
-        ├── Pending Customer Orders ─────────┼──▶ MRP Engine ──▶ Priority Classification
-        ├── Sales History (828k+ records) ───┤         │
-        └── Product Catalog ─────────────────┘         │
-                                                        ▼
-                                              Smart Minimum Stock
-                                              (3 Business Rules)
-                                                        │
-                                                        ▼
-                                              ML Forecasting Pipeline
-                                              (XGBoost · Optuna · Parquet)
-                                                        │
-                                                        ▼
-                                              Next.js Dashboard
-                                              (Planning · ABC · Projections)
+Step 1 — Historical Sales (828,613 records)
+         │
+         ▼
+Step 2 — Smart Minimum Stock
+         3 business rules applied per SKU
+         based on sales trend (growth · stable · decline)
+         │
+         ▼
+Step 3 — ML Demand Forecasting
+         XGBoost models per ABC curve
+         Recursive multi-month projection per SKU
+         │
+         ▼
+Step 4 — Available Stock Calculation
+         Physical stock + In-process − Already sold
+         Real-time from ERP database
+         │
+         ▼
+Step 5 — Coverage Analysis
+         How many days/weeks current available stock
+         covers projected demand per SKU
+         │
+         ▼
+Step 6 — Production Suggestion
+         What to produce · How much · Priority
+         Constrained by capacity configuration
+         Aligned with ideal coverage targets
 ```
 
 ---
@@ -53,59 +64,61 @@ ERP Database (PostgreSQL)
 ```
 production-planning-system/
 ├── python-backend/
-│   ├── main.py                    # FastAPI app and routes
+│   ├── main.py                      # FastAPI app and routes
 │   ├── services/
-│   │   ├── mrp_service.py         # MRP calculation engine
-│   │   ├── estoque_minimo.py      # Minimum stock business rules
-│   │   └── vendas_service.py      # Sales history queries
+│   │   ├── mrp_service.py           # MRP + coverage calculation
+│   │   ├── estoque_minimo.py        # Minimum stock business rules
+│   │   ├── sugestao_plano.py        # Production suggestion engine
+│   │   └── vendas_service.py        # Sales history queries
 │   ├── ml/
-│   │   ├── config.py              # Pipeline configuration
-│   │   ├── extract.py             # ERP data extraction → Parquet
-│   │   ├── features.py            # Feature engineering (no leakage)
-│   │   ├── train.py               # XGBoost training by ABC curve
-│   │   ├── predict.py             # Recursive multi-month projection
-│   │   ├── evaluate.py            # MAE, RMSE, MAPE, R² metrics
-│   │   ├── diagnostics.py         # Visual diagnostic suite
-│   │   ├── optimize.py            # Optuna hyperparameter search
-│   │   └── main.py                # Full pipeline runner
-│   └── database.py                # PostgreSQL connection pool
-├── app/                           # Next.js frontend
+│   │   ├── config.py                # Pipeline configuration + filters
+│   │   ├── extract.py               # ERP extraction → Parquet
+│   │   ├── features.py              # Feature engineering (no leakage)
+│   │   ├── train.py                 # XGBoost training by ABC curve
+│   │   ├── predict.py               # Recursive multi-month projection
+│   │   ├── evaluate.py              # MAE · RMSE · MAPE · R² metrics
+│   │   ├── diagnostics.py           # Visual diagnostic suite
+│   │   ├── optimize.py              # Optuna hyperparameter search
+│   │   └── main.py                  # Full pipeline runner
+│   └── database.py                  # PostgreSQL connection pool
+├── app/
 │   ├── components/
-│   │   ├── PlanoDeProdução/       # Planning matrix
-│   │   ├── CurvaABC/              # ABC curve analysis
-│   │   ├── Projeções/             # ML forecast views
-│   │   └── EstoqueMinimo/         # Minimum stock dashboard
+│   │   ├── PlanoDeProdução/         # Main planning matrix
+│   │   ├── SugestãoDePlano/         # Production suggestion view
+│   │   ├── Projeções/               # ML forecast visualization
+│   │   ├── CurvaABC/                # ABC curve analysis
+│   │   ├── Capacidade/              # Capacity configuration
+│   │   └── EstoqueMinimo/           # Minimum stock dashboard
 │   └── hooks/
 │       ├── usePlanejamento.ts
 │       └── useProjecoes.ts
-└── scripts/
-    └── testar-producao.js         # Integration test runner
+└── screenshots/
 ```
 
 ---
 
 ## ⚙️ Core Logic
 
-### 1. Smart Minimum Stock Engine
+### Step 1 — Smart Minimum Stock (3 Business Rules)
 
-Calculates dynamic minimum stock per SKU based on sales trend analysis over **828,613 historical records**.
+Applied over 828,613 real sales records. Each SKU gets a dynamic minimum stock based on its own sales trend.
 
 ```python
 def calcular_estoque_minimo(media_semestral: float, media_trimestral: float) -> dict:
     variacao = ((media_trimestral - media_semestral) / media_semestral) * 100
 
     if variacao > THRESHOLD_CRESCIMENTO:
-        # Rule 1 — Growth scenario: weight toward recent data
+        # Rule 1 — Growth: weight toward recent demand
         estoque_minimo = (media_semestral * 0.3) + (media_trimestral * 0.7)
         regra = 1
 
     elif variacao < THRESHOLD_QUEDA:
-        # Rule 2 — Decline scenario: conservative, use lower average
+        # Rule 2 — Decline: conservative, use lower average
         estoque_minimo = min(media_semestral, media_trimestral)
         regra = 2
 
     else:
-        # Rule 3 — Stable scenario: balanced average
+        # Rule 3 — Stable: balanced average
         estoque_minimo = (media_semestral + media_trimestral) / 2
         regra = 3
 
@@ -116,70 +129,33 @@ def calcular_estoque_minimo(media_semestral: float, media_trimestral: float) -> 
     }
 ```
 
-### 2. MRP Calculation Engine
+---
+
+### Step 2 — ML Forecasting Pipeline
+
+Segmented XGBoost models trained per ABC curve — different complexity for different demand patterns.
 
 ```python
-def calcular_necessidade_producao(produto: dict) -> dict:
-    # Integrate all 5 data sources
-    estoque_disponivel = estoque_atual + em_processo
-    necessidade_total = estoque_minimo + pedidos_pendentes
-    necessidade_producao = max(0, necessidade_total - estoque_disponivel)
-
-    # Priority classification
-    if estoque_atual < estoque_minimo:
-        prioridade = "ALTA"    # Product already below minimum — urgent
-    elif necessidade_producao > 0:
-        prioridade = "MEDIA"   # Production needed, but stock still OK
-    else:
-        prioridade = "BAIXA"   # No action required
-
-    return {
-        "necessidade_producao": necessidade_producao,
-        "prioridade": prioridade,
-        "situacao": "PRODUZIR" if necessidade_producao > 0 else "ESTOQUE_OK"
-    }
-```
-
-### 3. ML Forecasting Pipeline
-
-Segmented XGBoost models trained per ABC curve — different strategies for different demand patterns.
-
-```python
-# Segmentation strategy
+# Segmentation strategy per curve
 CURVE_MODELS = {
-    "A": "xgboost_full",        # Full feature set, complex model
-    "B": "xgboost_simplified",  # Reduced features, lighter model
-    "C/D": "group_level"        # Group prediction + share-weighted allocation per SKU
+    "A": "xgboost_full",       # Full feature set — high-value SKUs
+    "B": "xgboost_simplified", # Reduced features — mid-tier SKUs
+    "C/D": "group_level"       # Group prediction + share-weighted SKU allocation
 }
 
-# Feature engineering — no temporal leakage
+# Features engineered without temporal leakage
 FEATURES = [
-    "lag_1", "lag_2", "lag_3",          # Recent lags
-    "rolling_avg_3m", "rolling_avg_6m", # Rolling averages
-    "trend_slope",                        # Linear trend
-    "yoy_ratio",                          # Year-over-year ratio
-    "month_sin", "month_cos"             # Cyclical seasonality encoding
+    "lag_1", "lag_2", "lag_3",           # Recent demand lags
+    "rolling_avg_3m", "rolling_avg_6m",  # Rolling averages
+    "trend_slope",                         # Linear trend direction
+    "yoy_ratio",                           # Year-over-year ratio
+    "month_sin", "month_cos"              # Cyclical seasonality encoding
 ]
 
-# Validation — TimeSeriesSplit prevents data leakage
+# TimeSeriesSplit — no data leakage between train and validation
 tscv = TimeSeriesSplit(n_splits=5)
-for train_idx, val_idx in tscv.split(X):
-    # Train only on past, validate on future
-    ...
-```
 
-**Hyperparameter optimization with Optuna:**
-```python
-def objective(trial):
-    params = {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 500),
-        "max_depth": trial.suggest_int("max_depth", 3, 8),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
-        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-    }
-    # Bayesian search across XGBoost and LightGBM
-    ...
-
+# Optuna — Bayesian hyperparameter search
 study = optuna.create_study(direction="minimize")  # minimize MAPE
 study.optimize(objective, n_trials=100)
 ```
@@ -188,62 +164,123 @@ study.optimize(objective, n_trials=100)
 
 ---
 
+### Step 3 — Available Stock Calculation
+
+```python
+def calcular_disponivel(produto: dict) -> dict:
+    # Real-time from ERP
+    estoque_fisico = get_estoque_fabrica(produto["idproduto"])
+    em_processo = get_em_processo(produto["idproduto"])
+    ja_vendido = get_pedidos_pendentes(produto["idproduto"])
+
+    # What's actually available to cover future demand
+    disponivel = estoque_fisico + em_processo - ja_vendido
+
+    return {
+        "estoque_fisico": estoque_fisico,
+        "em_processo": em_processo,
+        "ja_vendido": ja_vendido,
+        "disponivel": max(0, disponivel)
+    }
+```
+
+---
+
+### Step 4 — Coverage Analysis
+
+How long current available stock covers projected demand.
+
+```python
+def calcular_cobertura(disponivel: float, projecao_mensal: float) -> dict:
+    if projecao_mensal <= 0:
+        return {"cobertura_meses": None, "status": "SEM_DEMANDA"}
+
+    cobertura_meses = disponivel / projecao_mensal
+
+    if cobertura_meses >= COBERTURA_IDEAL:
+        status = "ADEQUADA"
+    elif cobertura_meses >= COBERTURA_MINIMA:
+        status = "ATENCAO"
+    else:
+        status = "CRITICA"
+
+    return {
+        "cobertura_meses": round(cobertura_meses, 2),
+        "cobertura_ideal": COBERTURA_IDEAL,
+        "gap_cobertura": max(0, COBERTURA_IDEAL - cobertura_meses),
+        "status": status
+    }
+```
+
+---
+
+### Step 5 — Production Suggestion Engine
+
+Combines everything: minimum stock, ML forecast, available stock, coverage gap, and capacity constraints.
+
+```python
+def gerar_sugestao_plano(produto: dict, configuracoes: dict) -> dict:
+    disponivel = calcular_disponivel(produto)["disponivel"]
+    projecao = get_projecao_ml(produto["idproduto"])
+    estoque_minimo = calcular_estoque_minimo(
+        produto["media_semestral"],
+        produto["media_trimestral"]
+    )["estoqueMinimo"]
+
+    # How much is needed to reach ideal coverage
+    necessidade_cobertura = projecao * configuracoes["cobertura_ideal_meses"]
+
+    # Total need = coverage target + minimum stock buffer
+    necessidade_total = necessidade_cobertura + estoque_minimo
+
+    # What still needs to be produced
+    sugestao_bruta = max(0, necessidade_total - disponivel)
+
+    # Apply capacity constraint
+    capacidade_disponivel = configuracoes["capacidade_maxima_periodo"]
+    sugestao_final = min(sugestao_bruta, capacidade_disponivel)
+
+    return {
+        "sugestao_producao": round(sugestao_final, 0),
+        "necessidade_total": round(necessidade_total, 0),
+        "disponivel": round(disponivel, 0),
+        "cobertura_atual": round(disponivel / projecao, 2) if projecao > 0 else None,
+        "cobertura_apos_producao": round((disponivel + sugestao_final) / projecao, 2),
+        "limitado_por_capacidade": sugestao_final < sugestao_bruta,
+        "prioridade": classificar_prioridade(disponivel, estoque_minimo, sugestao_final)
+    }
+```
+
+---
+
 ## 🔌 API Reference
 
 ```
-GET  /api/producao/planejamento                    # Bulk planning (up to 200 SKUs)
-GET  /api/producao/planejamento/:cdProduto         # Single product full analysis
-GET  /api/producao/estoque                         # Current physical stock
-GET  /api/producao/em-processo                     # In-process production
-GET  /api/producao/pedidos-pendentes/:cdProduto    # Pending orders by product
-GET  /api/producao/catalogo                        # Full product catalog
-POST /api/ml/run-pipeline                          # Trigger ML forecast pipeline
-GET  /api/vendas/produtos/:id/estoque-minimo       # Minimum stock calculation
-GET  /api/vendas/produtos/:id/estatisticas         # Full sales statistics
-```
-
-**Example — products that need production, ordered by priority:**
-```bash
-curl "/api/producao/planejamento?apenas_necessidade=true&ordenar_por=prioridade&limit=50"
-```
-
-**Example response:**
-```json
-{
-  "produto": { "apresentacao": "PRODUCT NAME", "continuidade": "PERMANENTE" },
-  "estoques": {
-    "estoque_atual": 45,
-    "em_processo": 120,
-    "estoque_disponivel": 165,
-    "estoque_minimo": 200
-  },
-  "demanda": {
-    "pedidos_pendentes": 80,
-    "media_vendas_6m": 95.4,
-    "media_vendas_3m": 110.2
-  },
-  "planejamento": {
-    "necessidade_producao": 115,
-    "prioridade": "ALTA",
-    "situacao": "PRODUZIR"
-  }
-}
+GET  /api/producao/planejamento                     # Bulk planning matrix (up to 200 SKUs)
+GET  /api/producao/planejamento/:cdProduto          # Single product full analysis
+GET  /api/producao/sugestao-plano                   # Production suggestions with capacity
+GET  /api/producao/estoque                          # Current physical stock
+GET  /api/producao/em-processo                      # In-process production
+GET  /api/producao/pedidos-pendentes/:cdProduto     # Pending orders
+GET  /api/producao/catalogo                         # Product catalog with filters
+GET  /api/producao/cobertura                        # Coverage analysis per SKU
+POST /api/ml/run-pipeline                           # Trigger ML forecast pipeline
+GET  /api/vendas/produtos/:id/estoque-minimo        # Minimum stock per SKU
+GET  /api/vendas/produtos/:id/estatisticas          # Full sales statistics
 ```
 
 ---
 
 ## 📊 ML Diagnostic Output
 
-The pipeline generates a full diagnostic suite after each run:
-
 | Output | Description |
 |---|---|
 | `regression_curve_*.png` | Predicted vs actual scatter with identity line |
-| `anomalies_curve_*.png` | Outlier detection via IQR method |
+| `anomalies_curve_*.png` | Outlier detection via IQR |
 | `importance_curve_*.png` | Feature importance ranking per curve |
 | `temporal_curve_*.png` | Temporal series — predicted vs actual over time |
-| `diagnostic_report.txt` | Full text report with qualitative metrics |
-| `app_ml_runs` (PostgreSQL) | Run metadata, parameters, and metrics |
+| `diagnostic_report.txt` | Full qualitative metrics report |
+| `app_ml_runs` (PostgreSQL) | Run metadata, parameters, and metrics per execution |
 | `app_ml_forecasts` (PostgreSQL) | SKU-level forecasts per month |
 
 ---
@@ -263,5 +300,5 @@ The pipeline generates a full diagnostic suite after each run:
 ## 🔐 Notes
 
 - All credentials managed via environment variables — never committed
-- ERP database functions (`f_dic_sld_prd_produto`) abstracted in the service layer
-- Production data and business-specific filters removed from this public version
+- ERP database functions abstracted in service layer
+- Production data, business-specific filters, and capacity configurations removed from this public version
